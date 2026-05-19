@@ -45,9 +45,16 @@ Vite + TypeScript (vanilla) · [@mediapipe/tasks-vision](https://www.npmjs.com/p
 ## 개발
 ```bash
 npm install
-npm run dev      # http://localhost:5173
-npm run build    # dist/ 산출
+npm run dev          # http://localhost:5173
+npm run build        # dist/ 산출
+npm test             # 합성 landmark/wrist motion 단위 테스트
+npm run cold-load    # 배포 URL의 cold path 자산 fetch 시간 측정
 ```
+
+## 자체 검증 (사용자 환경 의존 게이트 제외)
+- `npm test`: idealized 21-landmark 픽스처 9개 → chord classifier 9/9 통과. 합성 wrist y motion → 10 alternating down + 10 up + idle false-pos 0.
+- `npm run cold-load`: 배포 URL + Vite bundle + MediaPipe WASM + 모델 시퀀셜 fetch 1초대 (30s 예산의 5% 미만).
+- 실제 카메라 latency / 사용자 손 인식률 / 친구 테스트는 사용자가 직접 측정.
 
 ## 배포
 `master` push → GitHub Actions가 `dist/`를 GitHub Pages로 발행.
