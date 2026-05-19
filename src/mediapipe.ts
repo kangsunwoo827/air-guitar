@@ -23,17 +23,36 @@ export class HandTracker {
 
   async init(): Promise<void> {
     const vision = await FilesetResolver.forVisionTasks(WASM_BASE);
-    this.landmarker = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: {
-        modelAssetPath: MODEL_URL,
-        delegate: 'GPU',
-      },
-      runningMode: 'VIDEO',
-      numHands: 2,
-      minHandDetectionConfidence: 0.5,
-      minHandPresenceConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    });
+    // GPU is faster but requires a WebGL/WebGPU context. Some Chrome+driver
+    // combos (e.g. when the GPU service is unavailable in the renderer) throw
+    // `emscripten_webgl_create_context() returned error 0` at StartGraph time.
+    // Fall back to CPU on any GPU-init failure so the app still works.
+    try {
+      this.landmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
+        runningMode: 'VIDEO',
+        numHands: 2,
+        minHandDetectionConfidence: 0.5,
+        minHandPresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+      // Probe the graph once with a tiny canvas to surface lazy GPU errors at init.
+      const probe = typeof OffscreenCanvas === 'function'
+        ? new OffscreenCanvas(2, 2)
+        : Object.assign(document.createElement('canvas'), { width: 2, height: 2 });
+      this.landmarker.detectForVideo(probe as unknown as HTMLCanvasElement, 1);
+    } catch (gpuErr) {
+      console.warn('[mediapipe] GPU delegate failed, retrying with CPU:', (gpuErr as Error).message);
+      try { this.landmarker?.close(); } catch { /* ignore */ }
+      this.landmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: MODEL_URL, delegate: 'CPU' },
+        runningMode: 'VIDEO',
+        numHands: 2,
+        minHandDetectionConfidence: 0.5,
+        minHandPresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+    }
   }
 
   detect(video: HTMLVideoElement | HTMLCanvasElement | OffscreenCanvas | ImageBitmap, nowMs: number): FrameDetection {

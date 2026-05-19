@@ -253,8 +253,10 @@ function runPlayMode(det: FrameDetection, tMs: number): void {
     ? `wrist y=${strumHand.landmarks[0].y.toFixed(2)}`
     : '(no strum hand)';
 
+  const outLatMs = audio.outputLatencySec() * 1000;
+  const latWarn = outLatMs > 60 ? '⚠ Bluetooth/HDMI?' : '';
   statsEl.textContent =
-    `mode: PLAY   fps: ${fps.toFixed(1)}   chord-hand: ${chordHandSide}\n` +
+    `mode: PLAY   fps: ${fps.toFixed(1)}   chord-hand: ${chordHandSide}   audio_out: ${outLatMs.toFixed(0)}ms ${latWarn}\n` +
     `chord: ${currentChord ?? '—'}    fingers: ${fingers}\n` +
     `strum: ${strumPos}    last: ${lastStrumAge}`;
 }
