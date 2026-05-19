@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Air Guitar</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div id="stage">
+        <video id="cam" autoplay playsinline muted></video>
+        <canvas id="overlay"></canvas>
+        <div id="hud">
+          <div id="chord-label">--</div>
+          <div id="strum-flash"></div>
+          <div id="stats"></div>
+          <div id="status">camera off</div>
+        </div>
+      </div>
+      <div id="controls">
+        <button id="start">START</button>
+        <label><input type="checkbox" id="mode-spike" /> latency spike mode</label>
+      </div>
+      <div id="legend"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
