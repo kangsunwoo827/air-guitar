@@ -23,36 +23,23 @@ export class HandTracker {
 
   async init(): Promise<void> {
     const vision = await FilesetResolver.forVisionTasks(WASM_BASE);
-    // GPU is faster but requires a WebGL/WebGPU context. Some Chrome+driver
-    // combos (e.g. when the GPU service is unavailable in the renderer) throw
-    // `emscripten_webgl_create_context() returned error 0` at StartGraph time.
-    // Fall back to CPU on any GPU-init failure so the app still works.
-    try {
-      this.landmarker = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
-        runningMode: 'VIDEO',
-        numHands: 2,
-        minHandDetectionConfidence: 0.5,
-        minHandPresenceConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-      });
-      // Probe the graph once with a tiny canvas to surface lazy GPU errors at init.
-      const probe = typeof OffscreenCanvas === 'function'
-        ? new OffscreenCanvas(2, 2)
-        : Object.assign(document.createElement('canvas'), { width: 2, height: 2 });
-      this.landmarker.detectForVideo(probe as unknown as HTMLCanvasElement, 1);
-    } catch (gpuErr) {
-      console.warn('[mediapipe] GPU delegate failed, retrying with CPU:', (gpuErr as Error).message);
-      try { this.landmarker?.close(); } catch { /* ignore */ }
-      this.landmarker = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: MODEL_URL, delegate: 'CPU' },
-        runningMode: 'VIDEO',
-        numHands: 2,
-        minHandDetectionConfidence: 0.5,
-        minHandPresenceConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-      });
-    }
+    // Use CPU delegate by default. GPU is ~3x faster but some Chrome configs
+    // can't create a WebGL context inside the MediaPipe WASM renderer process
+    // (the user-side `emscripten_webgl_create_context() returned error 0`
+    //  / "Service kGpuService was not provided" failure). The error from the
+    // GPU delegate is logged to console without throwing, so detectForVideo
+    // can't reliably probe it — running on CPU side-steps the issue entirely.
+    // Pass `?gpu=1` in the URL to opt back into the GPU delegate.
+    const wantGpu = new URLSearchParams(location.search).has('gpu');
+    const delegate: 'GPU' | 'CPU' = wantGpu ? 'GPU' : 'CPU';
+    this.landmarker = await HandLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URL, delegate },
+      runningMode: 'VIDEO',
+      numHands: 2,
+      minHandDetectionConfidence: 0.5,
+      minHandPresenceConfidence: 0.5,
+      minTrackingConfidence: 0.5,
+    });
   }
 
   detect(video: HTMLVideoElement | HTMLCanvasElement | OffscreenCanvas | ImageBitmap, nowMs: number): FrameDetection {
