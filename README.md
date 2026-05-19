@@ -59,7 +59,22 @@ npm run boot         # 시스템 Chrome으로 headless boot smoke (puppeteer-cor
 ## 자체 검증 (사용자 환경 의존 게이트 제외)
 - `npm test`: idealized 21-landmark 픽스처 9개 → chord classifier 9/9 통과. 합성 wrist y motion → 10 alternating down + 10 up + idle false-pos 0.
 - `npm run cold-load`: 배포 URL + Vite bundle + MediaPipe WASM + 모델 시퀀셜 fetch 1초대 (30s 예산의 5% 미만).
-- 실제 카메라 latency / 사용자 손 인식률 / 친구 테스트는 사용자가 직접 측정.
+- `npm run boot`: 시스템 Chrome으로 nav→running 1.3s (헤드리스 fake 카메라).
+- `npm run perf`: `?perf-test=1` 모드를 헤드리스로 돌려 audio baseLatency/outputLatency + MediaPipe inference time 실측.
+- 실제 손 인식률 / 친구 테스트는 사용자가 직접 측정.
+
+## Latency 직접 측정 (사용자 setup)
+`/?perf-test=1` URL로 들어가서 버튼 한 번 누르면 화면에 표시:
+- `audio baseLatency` / `outputLatency` — 사용자의 오디오 디바이스가 보고하는 출력 지연
+- `mediapipe inference` — 사용자 머신에서 GPU 추론 시간
+- `total end-to-end ≈ audio + mediapipe + 35ms 카메라 가정` — < 150ms면 PASS
+
+**중요**: outputLatency는 디바이스마다 크게 다름.
+- 빌트인 스피커 / 유선 헤드셋: 보통 5–30ms → 전체 50–80ms (PASS)
+- Bluetooth (AirPods 등): 100–250ms → 전체 150–300ms (FAIL 가능)
+- HDMI 모니터 스피커: 보통 100–200ms (FAIL 가능)
+
+게이트 측정 시 빌트인 스피커 / 유선 헤드셋 사용 권장.
 
 ## 배포
 `master` push → GitHub Actions가 `dist/`를 GitHub Pages로 발행.
