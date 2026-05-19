@@ -1,10 +1,29 @@
 import './style.css';
-import { HandTracker, type FrameDetection } from './mediapipe';
+import { HandTracker, type FrameDetection, type Hand } from './mediapipe';
 import { audio, type ChordName } from './audio';
 import { classifyChord, ChordStabilizer, CHORD_LIST, CHORD_HINTS } from './chord-rules';
 import { StrumDetector, type StrumEvent } from './strum';
 import { drawHands, sizeCanvasTo } from './draw';
 import { ClapLatencyTracker } from './spike';
+
+// Diagnostic hook — e2e drivers attach `__airDiag.forceHands` to short-circuit
+// MediaPipe detection with a synthesized Hand[] (used by `npm run live-e2e` so
+// the pipeline can be exercised end-to-end inside headless Chrome with the
+// fake video device, where no actual hand is in frame).
+type DiagState = {
+  frameCount: number;
+  drawCalls: number;
+  lastChord: ChordName | null;
+  lastError: string | null;
+  forceHands?: (tMs: number) => Hand[];
+};
+declare global {
+  interface Window {
+    __airDiag?: DiagState;
+  }
+}
+const diag: DiagState = { frameCount: 0, drawCalls: 0, lastChord: null, lastError: null };
+window.__airDiag = diag;
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -187,16 +206,29 @@ function processFrame(frameCaptureMs: number): void {
     lastFpsAt = tMs;
   }
 
-  // Run MediaPipe on the current frame.
-  sizeCanvasTo(video, overlay);
-  const det: FrameDetection = tracker.detect(video, tMs);
-  const ctx = overlay.getContext('2d');
-  if (ctx) drawHands(ctx, det.hands);
-
-  if (modeSpikeEl.checked) {
-    runSpikeMode(det, frameCaptureMs, tMs);
-  } else {
-    runPlayMode(det, tMs);
+  try {
+    sizeCanvasTo(video, overlay);
+    let det: FrameDetection = tracker.detect(video, tMs);
+    // Diagnostic short-circuit: e2e tests can inject synthetic hands so the
+    // rest of the pipeline (draw + classify + strum) runs without a real hand
+    // being visible to the camera.
+    if (diag.forceHands) {
+      det = { ...det, hands: diag.forceHands(tMs) };
+    }
+    const ctx = overlay.getContext('2d');
+    if (ctx) {
+      drawHands(ctx, det.hands);
+      if (det.hands.length > 0) diag.drawCalls++;
+    }
+    if (modeSpikeEl.checked) {
+      runSpikeMode(det, frameCaptureMs, tMs);
+    } else {
+      runPlayMode(det, tMs);
+    }
+    diag.frameCount++;
+  } catch (err) {
+    diag.lastError = (err as Error).message;
+    console.error('processFrame error:', err);
   }
 }
 
@@ -232,6 +264,7 @@ function runPlayMode(det: FrameDetection, tMs: number): void {
   const stable = chordStab.update(raw);
   currentChord = stable;
   chordLabelEl.textContent = stable ?? '—';
+  diag.lastChord = stable;
 
   // Strum detection
   const event = strum.update(strumHand ? strumHand.landmarks : null, tMs);

@@ -10,7 +10,8 @@
     "test": "tsx --test tests/*.test.ts",
     "cold-load": "tsx tests/cold-load.ts",
     "boot": "tsx tests/boot.ts",
-    "perf": "tsx tests/perf.ts"
+    "perf": "tsx tests/perf.ts",
+    "live-e2e": "tsx tests/live-e2e.ts"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.14"
