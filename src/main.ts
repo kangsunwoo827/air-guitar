@@ -37,7 +37,89 @@ let frameCount = 0;
 let lastFpsAt = performance.now();
 let fps = 0;
 
-startBtn.addEventListener('click', start, { once: true });
+if (new URLSearchParams(location.search).has('perf-test')) {
+  startBtn.textContent = 'Run perf self-test';
+  startBtn.addEventListener('click', runPerfSelfTest, { once: true });
+} else {
+  startBtn.addEventListener('click', start, { once: true });
+}
+
+async function runPerfSelfTest(): Promise<void> {
+  startBtn.disabled = true;
+  setStatus('initializing audio + mediapipe...');
+  await audio.init();
+  await audio.resume();
+  await tracker.init();
+
+  // 1) Audio scheduling latency — time from playPing() call to estimated audible moment.
+  // audibleMs = scheduling perf.now() + outputLatency_seconds * 1000.
+  // baseLatency + outputLatency on AudioContext gives the device-side delay between when a
+  // sample is handed to the audio subsystem and when the listener hears it.
+  setStatus('measuring audio latency (10 pings)...');
+  const ctx0 = audio.ctx;
+  const baseLat = ctx0.baseLatency ?? 0;
+  const outLat = (ctx0 as unknown as { outputLatency?: number }).outputLatency ?? 0;
+  const audioSamples: number[] = [];
+  for (let i = 0; i < 10; i++) {
+    await new Promise((r) => setTimeout(r, 80));
+    const t0 = performance.now();
+    audio.playPing();
+    // After start(ctx.currentTime), the sample will be heard outputLatency_seconds in the future,
+    // measured against the same performance clock t0 is on.
+    const out = (audio.ctx as unknown as { outputLatency?: number }).outputLatency ?? 0;
+    const audibleMs = t0 + (audio.ctx.baseLatency + out) * 1000;
+    audioSamples.push(audibleMs - t0);
+  }
+
+  // 2) MediaPipe inference latency — repeated detect() on a synthetic gray frame.
+  setStatus('measuring mediapipe inference (10 frames)...');
+  const cnv = document.createElement('canvas');
+  cnv.width = 640;
+  cnv.height = 480;
+  const c2d = cnv.getContext('2d');
+  if (c2d) {
+    c2d.fillStyle = '#888';
+    c2d.fillRect(0, 0, cnv.width, cnv.height);
+  }
+  // Warm-up: first inference includes JIT/lazy-init cost we don't want to measure.
+  for (let i = 0; i < 3; i++) {
+    tracker.detect(cnv, performance.now());
+    await new Promise((r) => setTimeout(r, 30));
+  }
+  const mpSamples: number[] = [];
+  for (let i = 0; i < 10; i++) {
+    await new Promise((r) => setTimeout(r, 16));
+    const t0 = performance.now();
+    tracker.detect(cnv, performance.now());
+    mpSamples.push(performance.now() - t0);
+  }
+
+  const avg = (xs: number[]): number => xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length);
+  const maxOf = (xs: number[]): number => xs.reduce((a, b) => Math.max(a, b), 0);
+  const aAvg = avg(audioSamples);
+  const aMax = maxOf(audioSamples);
+  const mAvg = avg(mpSamples);
+  const mMax = maxOf(mpSamples);
+  const CAMERA_DELAY_ESTIMATE_MS = 35; // typical M-series webcam capture delay
+  const totalAvg = aAvg + mAvg + CAMERA_DELAY_ESTIMATE_MS;
+  const totalMax = aMax + mMax + CAMERA_DELAY_ESTIMATE_MS;
+
+  const report =
+    `audio_avg=${aAvg.toFixed(1)}ms audio_max=${aMax.toFixed(1)}ms ` +
+    `mp_avg=${mAvg.toFixed(1)}ms mp_max=${mMax.toFixed(1)}ms ` +
+    `total_avg=${totalAvg.toFixed(0)}ms total_max=${totalMax.toFixed(0)}ms`;
+  statsEl.textContent =
+    `PERF SELF-TEST\n` +
+    `audio baseLatency=${(baseLat * 1000).toFixed(1)}ms  outputLatency=${(outLat * 1000).toFixed(1)}ms\n` +
+    `audio scheduling     avg ${aAvg.toFixed(1)}ms   max ${aMax.toFixed(1)}ms\n` +
+    `mediapipe inference  avg ${mAvg.toFixed(1)}ms   max ${mMax.toFixed(1)}ms\n` +
+    `+ camera capture (assumed) ${CAMERA_DELAY_ESTIMATE_MS}ms\n` +
+    `≈ total end-to-end   avg ${totalAvg.toFixed(0)}ms   max ${totalMax.toFixed(0)}ms\n` +
+    `gate < 150ms: ${totalAvg < 150 ? 'PASS' : 'FAIL'}`;
+  setStatus(`perf-done ${totalAvg < 150 ? 'PASS' : 'FAIL'}`);
+  // Expose to the title for headless drivers.
+  document.title = `PERF ${totalAvg < 150 ? 'PASS' : 'FAIL'} ${report}`;
+}
 
 async function start(): Promise<void> {
   startBtn.disabled = true;

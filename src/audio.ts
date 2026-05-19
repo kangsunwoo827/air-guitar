@@ -29,7 +29,13 @@ class AudioEngine {
   async init(): Promise<void> {
     if (this.ready) return;
     const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    this.ctx = new Ctor({ latencyHint: 'interactive' });
+    // latencyHint: 0 requests the smallest latency the user agent can deliver.
+    // Falls back to 'interactive' on browsers that don't accept a numeric hint.
+    try {
+      this.ctx = new Ctor({ latencyHint: 0 as unknown as AudioContextLatencyCategory });
+    } catch {
+      this.ctx = new Ctor({ latencyHint: 'interactive' });
+    }
     this.master = this.ctx.createGain();
     this.master.gain.value = 0.55;
     this.master.connect(this.ctx.destination);
