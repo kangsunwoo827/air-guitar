@@ -36,7 +36,7 @@ export class HandTracker {
     });
   }
 
-  detect(video: HTMLVideoElement, nowMs: number): FrameDetection {
+  detect(video: HTMLVideoElement | HTMLCanvasElement | OffscreenCanvas | ImageBitmap, nowMs: number): FrameDetection {
     // detectForVideo requires monotonically increasing timestamps.
     let ts = Math.floor(nowMs);
     if (ts <= this.lastTimestamp) ts = this.lastTimestamp + 1;

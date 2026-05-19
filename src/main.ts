@@ -1,7 +1,7 @@
 import './style.css';
 import { HandTracker, type FrameDetection } from './mediapipe';
 import { audio, type ChordName } from './audio';
-import { classifyChord, ChordStabilizer, CHORD_GESTURES } from './chord-rules';
+import { classifyChord, ChordStabilizer, CHORD_LIST, CHORD_HINTS } from './chord-rules';
 import { StrumDetector, type StrumEvent } from './strum';
 import { drawHands, sizeCanvasTo } from './draw';
 import { ClapLatencyTracker } from './spike';
@@ -178,13 +178,8 @@ function runPlayMode(det: FrameDetection, tMs: number): void {
 }
 
 function formatFingers(s: ReturnType<typeof classifyChord>['state']): string {
-  return [
-    s.thumb ? 'T' : '·',
-    s.index ? 'I' : '·',
-    s.middle ? 'M' : '·',
-    s.ring ? 'R' : '·',
-    s.pinky ? 'P' : '·',
-  ].join('');
+  const code = (v: 'press' | 'ext' | 'curl'): string => (v === 'press' ? 'P' : v === 'ext' ? '|' : '·');
+  return `${code(s.index)}${code(s.middle)}${code(s.ring)}${code(s.pinky)}`;
 }
 
 function flashStrum(): void {
@@ -200,8 +195,8 @@ function setStatus(msg: string): void {
 }
 
 function renderLegend(): void {
-  const items = CHORD_GESTURES.map(
-    (g) => `<span class="item"><b>${g.chord}</b> ${g.hint}</span>`,
+  const items = CHORD_LIST.map(
+    (chord) => `<span class="item"><b>${chord}</b> ${CHORD_HINTS[chord]}</span>`,
   );
   legendEl.innerHTML = items.join('');
 }

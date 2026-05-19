@@ -1,36 +1,28 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { classifyChord, fingerStates } from '../src/chord-rules';
-import { makeHand, ALL_STATES } from './fixtures';
+import { makeChordHand, ALL_CHORDS, CHORD_FIXTURES } from './fixtures';
 
-// For each idealized gesture fixture, verify that:
-//   1. The finger-state detector returns the exact intended boolean pattern.
-//   2. The classifier maps it to the expected chord.
+// For each chord's idealized fingering fixture:
+//   1. The finger-state detector reports the intended press/ext/curl pattern.
+//   2. The classifier returns the expected chord.
 
-const EXPECTED_CHORD: Record<string, string> = {
-  fist: 'E',
-  'index-only': 'D',
-  'thumb-only': 'C',
-  peace: 'Em',
-  rock: 'A',
-  three: 'Am',
-  gun: 'Dm',
-  'four-tucked': 'G',
-  'open-palm': 'F',
-};
-
-for (const { name, state } of ALL_STATES) {
-  test(`finger-state detector: ${name}`, () => {
-    const lm = makeHand(state);
-    const detected = fingerStates(lm);
-    assert.deepEqual(detected, state, `expected ${JSON.stringify(state)}, got ${JSON.stringify(detected)}`);
+for (const chord of ALL_CHORDS) {
+  test(`finger states match plan: ${chord}`, () => {
+    const lm = makeChordHand(chord);
+    const states = fingerStates(lm);
+    const plan = CHORD_FIXTURES[chord];
+    assert.equal(states.index, plan.index.state, `${chord} index: expected ${plan.index.state}, got ${states.index}`);
+    assert.equal(states.middle, plan.middle.state, `${chord} middle: expected ${plan.middle.state}, got ${states.middle}`);
+    assert.equal(states.ring, plan.ring.state, `${chord} ring: expected ${plan.ring.state}, got ${states.ring}`);
+    assert.equal(states.pinky, plan.pinky.state, `${chord} pinky: expected ${plan.pinky.state}, got ${states.pinky}`);
   });
 }
 
-for (const { name, state } of ALL_STATES) {
-  test(`chord classifier: ${name} → ${EXPECTED_CHORD[name]}`, () => {
-    const lm = makeHand(state);
-    const { chord } = classifyChord(lm);
-    assert.equal(chord, EXPECTED_CHORD[name]);
+for (const chord of ALL_CHORDS) {
+  test(`classifyChord: ${chord}`, () => {
+    const lm = makeChordHand(chord);
+    const { chord: detected, bestDist } = classifyChord(lm);
+    assert.equal(detected, chord, `expected ${chord}, got ${detected} (distance ${bestDist.toFixed(3)})`);
   });
 }
