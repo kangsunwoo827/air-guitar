@@ -48,7 +48,8 @@ npm install
 npm run dev          # http://localhost:5173
 npm run build        # dist/ 산출
 npm test             # 합성 landmark/wrist motion 단위 테스트
-npm run cold-load    # 배포 URL의 cold path 자산 fetch 시간 측정
+npm run cold-load    # 배포 URL cold path 자산 fetch 시간
+npm run boot         # 시스템 Chrome으로 headless boot smoke (puppeteer-core)
 ```
 
 ## 자체 검증 (사용자 환경 의존 게이트 제외)
