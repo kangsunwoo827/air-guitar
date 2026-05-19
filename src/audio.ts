@@ -22,7 +22,8 @@ class AudioEngine {
   ctx!: AudioContext;
   master!: GainNode;
   pingBuffer!: AudioBuffer;
-  chordBuffers!: Record<ChordName, AudioBuffer>;
+  chordDown!: Record<ChordName, AudioBuffer>;
+  chordUp!: Record<ChordName, AudioBuffer>;
   ready = false;
 
   async init(): Promise<void> {
@@ -34,9 +35,12 @@ class AudioEngine {
     this.master.connect(this.ctx.destination);
 
     this.pingBuffer = this.buildPing(this.ctx);
-    this.chordBuffers = {} as Record<ChordName, AudioBuffer>;
+    this.chordDown = {} as Record<ChordName, AudioBuffer>;
+    this.chordUp = {} as Record<ChordName, AudioBuffer>;
+    // Pre-build BOTH directions so playChord() never synthesizes on the audio hot path.
     for (const name of Object.keys(CHORD_FREQS) as ChordName[]) {
-      this.chordBuffers[name] = this.buildChord(this.ctx, CHORD_FREQS[name]);
+      this.chordDown[name] = this.buildChord(this.ctx, CHORD_FREQS[name]);
+      this.chordUp[name] = this.buildChord(this.ctx, [...CHORD_FREQS[name]].reverse());
     }
     // resume() must be called on user gesture; caller does this on START.
     this.ready = true;
@@ -58,7 +62,7 @@ class AudioEngine {
 
   /** Play a chord. `direction` flips the strum order (down = low→high, up = high→low). */
   playChord(name: ChordName, direction: 'down' | 'up'): number {
-    const buf = direction === 'down' ? this.chordBuffers[name] : this.buildChord(this.ctx, [...CHORD_FREQS[name]].reverse());
+    const buf = direction === 'down' ? this.chordDown[name] : this.chordUp[name];
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     src.connect(this.master);
