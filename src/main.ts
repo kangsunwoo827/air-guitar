@@ -42,6 +42,14 @@ const modeSpikeEl = $<HTMLInputElement>('mode-spike');
 const legendEl = $<HTMLDivElement>('legend');
 const chartExpectedEl = document.getElementById('chart-expected') as unknown as SVGSVGElement;
 const chartDetectedEl = document.getElementById('chart-detected') as unknown as SVGSVGElement;
+// Offscreen canvas that we drawImage(video) into each frame, then hand to
+// tracker.detect. Some Chrome configurations crash inside MediaPipe's
+// video→texture path with `Cannot read properties of undefined (reading
+// 'activeTexture')` when an HTMLVideoElement is passed directly to
+// detectForVideo; copying the frame through a 2D canvas first uses a
+// different internal upload path that's been more reliable.
+const detectCanvas = document.createElement('canvas');
+const detectCtx = detectCanvas.getContext('2d');
 const loadingEl = $<HTMLDivElement>('loading');
 const loadingPhaseEl = loadingEl.querySelector('.phase') as HTMLDivElement;
 const loadingBarEl = loadingEl.querySelector('.bar') as HTMLDivElement;
@@ -293,7 +301,17 @@ function processFrame(frameCaptureMs: number): void {
 
   try {
     sizeCanvasTo(video, overlay);
-    let det: FrameDetection = tracker.detect(video, tMs);
+    // Copy the current video frame onto detectCanvas and feed THAT to
+    // MediaPipe instead of the live video element (see canvas declaration
+    // above for the activeTexture-crash reasoning). Skip the detect entirely
+    // if the video hasn't produced a real frame yet.
+    if (!video.videoWidth || !video.videoHeight || !detectCtx) return;
+    if (detectCanvas.width !== video.videoWidth || detectCanvas.height !== video.videoHeight) {
+      detectCanvas.width = video.videoWidth;
+      detectCanvas.height = video.videoHeight;
+    }
+    detectCtx.drawImage(video, 0, 0);
+    let det: FrameDetection = tracker.detect(detectCanvas, tMs);
     // Diagnostic short-circuit: e2e tests can inject synthetic hands so the
     // rest of the pipeline (draw + classify + strum) runs without a real hand
     // being visible to the camera.
