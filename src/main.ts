@@ -218,44 +218,77 @@ function teardown(): void {
 /** Probe whether we can create a WebGL2 context the same way MediaPipe will.
  *  If this fails before MediaPipe even loads, the activeTexture crash is an
  *  environment problem (extension patching getContext, GPU process down,
- *  context pool exhausted) rather than anything in MediaPipe. */
+ *  context pool exhausted) rather than anything in MediaPipe. Returns a
+ *  multi-line diagnosis so the failure cause can be pinpointed remotely. */
 function probeWebGL2(): { ok: boolean; reason: string } {
+  const lines: string[] = [];
+  // 1) Is the prototype getContext native, or has an extension wrapped it?
+  let getCtxPatched = false;
   try {
-    const c = document.createElement('canvas');
-    c.width = 32;
-    c.height = 32;
-    // MediaPipe asks with these attributes; mirror them so a refusal here
-    // would also be a refusal for MediaPipe.
-    const attrs: WebGLContextAttributes = {
-      alpha: false,
-      antialias: false,
-      depth: true,
-      stencil: false,
-      preserveDrawingBuffer: false,
-      premultipliedAlpha: true,
-      powerPreference: 'default',
-    };
-    const gl = c.getContext('webgl2', attrs) as WebGL2RenderingContext | null;
-    if (!gl) {
-      return { ok: false, reason: "canvas.getContext('webgl2') returned null" };
+    const src = HTMLCanvasElement.prototype.getContext.toString();
+    getCtxPatched = !src.includes('[native code]');
+    lines.push(`getContext patched: ${getCtxPatched ? 'YES (extension wrapper detected)' : 'no'}`);
+  } catch {
+    lines.push('getContext patched: unknown (toString threw)');
+  }
+  // 2) Try webgl2 with MediaPipe's exact attribute set.
+  const c = document.createElement('canvas');
+  c.width = 32;
+  c.height = 32;
+  const attrs: WebGLContextAttributes = {
+    alpha: false,
+    antialias: false,
+    depth: true,
+    stencil: false,
+    preserveDrawingBuffer: false,
+    premultipliedAlpha: true,
+    powerPreference: 'default',
+  };
+  let gl: WebGL2RenderingContext | null = null;
+  try {
+    gl = c.getContext('webgl2', attrs) as WebGL2RenderingContext | null;
+  } catch (e) {
+    lines.push(`webgl2(+attrs) threw: ${(e as Error).message}`);
+  }
+  lines.push(`webgl2(+attrs): ${gl ? 'OK' : 'null'}`);
+  if (!gl) {
+    // 3) Try webgl2 with no attrs (some browsers reject unusual attr combos).
+    let gl2 = null as WebGL2RenderingContext | null;
+    try {
+      gl2 = document.createElement('canvas').getContext('webgl2') as WebGL2RenderingContext | null;
+    } catch (e) {
+      lines.push(`webgl2(no attrs) threw: ${(e as Error).message}`);
     }
-    // Touch a method MediaPipe uses early — if a wallet extension has
-    // monkey-patched the prototype to throw or return undefined we'll see it.
-    if (typeof gl.activeTexture !== 'function') {
-      return { ok: false, reason: 'gl.activeTexture is not a function (patched away?)' };
+    lines.push(`webgl2(no attrs): ${gl2 ? 'OK' : 'null'}`);
+    // 4) Try webgl1 — if even this fails, it's not just a WebGL2-feature gate.
+    let gl1 = null as WebGLRenderingContext | null;
+    try {
+      gl1 = document.createElement('canvas').getContext('webgl') as WebGLRenderingContext | null;
+    } catch (e) {
+      lines.push(`webgl1 threw: ${(e as Error).message}`);
     }
+    lines.push(`webgl1: ${gl1 ? 'OK' : 'null'}`);
+    return { ok: false, reason: lines.join(' | ') };
+  }
+  // 5) Sanity check the context we got.
+  if (typeof gl.activeTexture !== 'function') {
+    lines.push('gl.activeTexture: missing');
+    return { ok: false, reason: lines.join(' | ') };
+  }
+  try {
     gl.activeTexture(gl.TEXTURE0);
     const err = gl.getError();
     if (err !== gl.NO_ERROR) {
-      return { ok: false, reason: `gl.getError() = 0x${err.toString(16)} after activeTexture probe` };
+      lines.push(`gl.getError after activeTexture: 0x${err.toString(16)}`);
+      return { ok: false, reason: lines.join(' | ') };
     }
-    // Best-effort context loss to free it.
-    const ext = gl.getExtension('WEBGL_lose_context');
-    if (ext) ext.loseContext();
-    return { ok: true, reason: 'WebGL2 OK' };
   } catch (e) {
-    return { ok: false, reason: `threw: ${(e as Error).message}` };
+    lines.push(`activeTexture probe threw: ${(e as Error).message}`);
+    return { ok: false, reason: lines.join(' | ') };
   }
+  const ext = gl.getExtension('WEBGL_lose_context');
+  if (ext) ext.loseContext();
+  return { ok: true, reason: lines.join(' | ') };
 }
 
 async function start(): Promise<void> {
