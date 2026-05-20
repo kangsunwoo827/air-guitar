@@ -82,6 +82,15 @@ export type FingerState = {
   pinky: 'press' | 'ext' | 'curl';
 };
 
+/** Fingertip positions in hand-local space (palm-width units). Exposed for the
+ *  chord-diagram overlay so callers can render where the user's fingers landed. */
+export type LocalTips = {
+  I: { x: number; y: number };
+  M: { x: number; y: number };
+  R: { x: number; y: number };
+  P: { x: number; y: number };
+};
+
 function classifyFinger(lm: Landmark[], mcp: number, pip: number, tip: number): 'press' | 'ext' | 'curl' {
   const c = pipCos(lm, mcp, pip, tip);
   if (c >= 0.7) return 'ext';
@@ -145,12 +154,19 @@ function classifyThreeFingerChord(
   return null;
 }
 
-export function classifyChord(lm: Landmark[]): { chord: ChordName | null; state: FingerState; bestDist: number } {
+export function classifyChord(lm: Landmark[]): {
+  chord: ChordName | null;
+  state: FingerState;
+  tips: LocalTips;
+  bestDist: number;
+} {
   const state = fingerStates(lm);
   const frame = handFrame(lm);
   const I = localXY(lm[INDEX_TIP], frame);
   const M = localXY(lm[MIDDLE_TIP], frame);
   const R = localXY(lm[RING_TIP], frame);
+  const P = localXY(lm[PINKY_TIP], frame);
+  const tips: LocalTips = { I, M, R, P };
 
   const pI = state.index === 'press';
   const pM = state.middle === 'press';
@@ -158,18 +174,18 @@ export function classifyChord(lm: Landmark[]): { chord: ChordName | null; state:
   const pP = state.pinky === 'press';
 
   // 2 fingers pressing: must be middle + ring (Em). Others wouldn't make a chord.
-  if (pM && pR && !pI && !pP) return { chord: 'Em', state, bestDist: 0 };
+  if (pM && pR && !pI && !pP) return { chord: 'Em', state, tips, bestDist: 0 };
 
   // All 4 fingers pressing → F (barre chord shape).
-  if (pI && pM && pR && pP) return { chord: 'F', state, bestDist: 0 };
+  if (pI && pM && pR && pP) return { chord: 'F', state, tips, bestDist: 0 };
 
   // 3 fingers (index + middle + ring) pressing → branch on tip arrangement.
   if (pI && pM && pR && !pP) {
     const chord = classifyThreeFingerChord(I, M, R);
-    return { chord, state, bestDist: 0 };
+    return { chord, state, tips, bestDist: 0 };
   }
 
-  return { chord: null, state, bestDist: 0 };
+  return { chord: null, state, tips, bestDist: 0 };
 }
 
 /** Temporal smoothing: chord must persist for >= n frames before becoming "current". */
@@ -206,6 +222,98 @@ export class ChordStabilizer {
 
 /** Re-export for legend rendering — the chord list in canonical order. */
 export const CHORD_LIST: ChordName[] = ['E', 'Am', 'Dm', 'G', 'C', 'D', 'A', 'Em', 'F'];
+
+/** Chord-chart shape data: where each finger lands on the fretboard.
+ *  Strings are numbered 1 (high e, rightmost on the chart) … 6 (low E, leftmost).
+ *  Frets are 1-based; 0 is not used here (open strings live in `open`). */
+export type FingerLabel = 'I' | 'M' | 'R' | 'P';
+export type ChordDot = { string: number; fret: number; finger: FingerLabel };
+export type ChordBarre = { fret: number; from: number; to: number; finger: FingerLabel };
+export type ChordShape = {
+  dots: ChordDot[];
+  barre?: ChordBarre;
+  open?: number[];
+  muted?: number[];
+};
+
+export const CHORD_SHAPES: Record<ChordName, ChordShape> = {
+  E: {
+    dots: [
+      { string: 3, fret: 1, finger: 'I' },
+      { string: 5, fret: 2, finger: 'M' },
+      { string: 4, fret: 2, finger: 'R' },
+    ],
+    open: [1, 2, 6],
+  },
+  Am: {
+    dots: [
+      { string: 2, fret: 1, finger: 'I' },
+      { string: 4, fret: 2, finger: 'M' },
+      { string: 3, fret: 2, finger: 'R' },
+    ],
+    open: [1, 5],
+    muted: [6],
+  },
+  Dm: {
+    dots: [
+      { string: 1, fret: 1, finger: 'I' },
+      { string: 3, fret: 2, finger: 'M' },
+      { string: 2, fret: 3, finger: 'R' },
+    ],
+    open: [4],
+    muted: [5, 6],
+  },
+  G: {
+    dots: [
+      { string: 5, fret: 2, finger: 'I' },
+      { string: 6, fret: 3, finger: 'M' },
+      { string: 1, fret: 3, finger: 'R' },
+    ],
+    open: [2, 3, 4],
+  },
+  C: {
+    dots: [
+      { string: 2, fret: 1, finger: 'I' },
+      { string: 4, fret: 2, finger: 'M' },
+      { string: 5, fret: 3, finger: 'R' },
+    ],
+    open: [1, 3],
+    muted: [6],
+  },
+  D: {
+    dots: [
+      { string: 3, fret: 2, finger: 'I' },
+      { string: 1, fret: 2, finger: 'M' },
+      { string: 2, fret: 3, finger: 'R' },
+    ],
+    open: [4],
+    muted: [5, 6],
+  },
+  A: {
+    dots: [
+      { string: 4, fret: 2, finger: 'I' },
+      { string: 3, fret: 2, finger: 'M' },
+      { string: 2, fret: 2, finger: 'R' },
+    ],
+    open: [1, 5],
+    muted: [6],
+  },
+  Em: {
+    dots: [
+      { string: 5, fret: 2, finger: 'M' },
+      { string: 4, fret: 2, finger: 'R' },
+    ],
+    open: [1, 2, 3, 6],
+  },
+  F: {
+    barre: { fret: 1, from: 1, to: 6, finger: 'I' },
+    dots: [
+      { string: 3, fret: 2, finger: 'M' },
+      { string: 5, fret: 3, finger: 'R' },
+      { string: 4, fret: 3, finger: 'P' },
+    ],
+  },
+};
 
 /** Short human description of how to make each chord pose (real open-chord fingering). */
 export const CHORD_HINTS: Record<ChordName, string> = {

@@ -1,9 +1,9 @@
 import './style.css';
-import { HandTracker, type FrameDetection, type Hand } from './mediapipe';
+import { HandTracker, type FrameDetection, type Hand, type InitProgress } from './mediapipe';
 import { audio, type ChordName } from './audio';
 import { classifyChord, ChordStabilizer, CHORD_LIST, CHORD_HINTS } from './chord-rules';
 import { StrumDetector, type StrumEvent } from './strum';
-import { drawHands, sizeCanvasTo } from './draw';
+import { drawHands, sizeCanvasTo, renderExpectedChart, renderDetectedChart } from './draw';
 import { ClapLatencyTracker } from './spike';
 
 // Diagnostic hook — e2e drivers attach `__airDiag.forceHands` to short-circuit
@@ -40,8 +40,49 @@ const chordLabelEl = $<HTMLDivElement>('chord-label');
 const strumFlashEl = $<HTMLDivElement>('strum-flash');
 const modeSpikeEl = $<HTMLInputElement>('mode-spike');
 const legendEl = $<HTMLDivElement>('legend');
+const chartExpectedEl = document.getElementById('chart-expected') as unknown as SVGSVGElement;
+const chartDetectedEl = document.getElementById('chart-detected') as unknown as SVGSVGElement;
+const loadingEl = $<HTMLDivElement>('loading');
+const loadingPhaseEl = loadingEl.querySelector('.phase') as HTMLDivElement;
+const loadingBarEl = loadingEl.querySelector('.bar') as HTMLDivElement;
+const loadingBarFillEl = loadingEl.querySelector('.bar-fill') as HTMLDivElement;
+const loadingHintEl = loadingEl.querySelector('.hint') as HTMLDivElement;
+
+function showLoading(phase: string, pct?: number, hint?: string): void {
+  loadingEl.hidden = false;
+  loadingPhaseEl.textContent = phase;
+  if (pct == null) {
+    loadingBarEl.setAttribute('data-indeterminate', '1');
+    loadingBarFillEl.style.width = '';
+  } else {
+    loadingBarEl.removeAttribute('data-indeterminate');
+    loadingBarFillEl.style.width = `${Math.min(100, Math.max(0, pct))}%`;
+  }
+  loadingHintEl.textContent = hint ?? '';
+}
+
+function hideLoading(): void {
+  loadingEl.hidden = true;
+}
+
+function progressToLoading(p: InitProgress): void {
+  const hint =
+    p.phase === 'model'
+      ? '첫 로드 시에만 다운로드 (이후 캐시)'
+      : p.phase === 'probe'
+      ? 'GPU graph 가능 여부 확인 중...'
+      : p.phase === 'fallback'
+      ? 'GPU 사용 불가 → CPU로 전환 (3x 느림, 동작은 동일)'
+      : p.phase === 'graph'
+      ? `${p.delegate ?? ''} 그래프 시작 중...`
+      : '';
+  showLoading(p.message, p.pct, hint);
+}
 
 renderLegend();
+// Initial empty render so the panel isn't blank before the user presses START.
+renderExpectedChart(chartExpectedEl, null);
+renderDetectedChart(chartDetectedEl, null, null);
 
 const tracker = new HandTracker();
 const clap = new ClapLatencyTracker();
@@ -55,6 +96,17 @@ let lastStrum: StrumEvent | null = null;
 let frameCount = 0;
 let lastFpsAt = performance.now();
 let fps = 0;
+// Stickiness window: keep the last good chord usable for strum a short time
+// after detection drops it. A brief MediaPipe wobble right at the strum frame
+// shouldn't silence the chord — the user already saw it on screen.
+let lastStableChord: ChordName | null = null;
+let lastStableChordAt = 0;
+const CHORD_STICK_MS = 300;
+// If detect() throws repeatedly the loop would spin forever spamming the
+// console, masking the real failure. After a few consecutive frame failures
+// we stop the loop and surface a clear retry path to the user.
+let consecutiveFrameErrors = 0;
+const MAX_FRAME_ERRORS = 5;
 
 if (new URLSearchParams(location.search).has('perf-test')) {
   startBtn.textContent = 'Run perf self-test';
@@ -66,9 +118,11 @@ if (new URLSearchParams(location.search).has('perf-test')) {
 async function runPerfSelfTest(): Promise<void> {
   startBtn.disabled = true;
   setStatus('initializing audio + mediapipe...');
+  showLoading('audio + mediapipe 초기화...');
   await audio.init();
   await audio.resume();
-  await tracker.init();
+  await tracker.init(progressToLoading);
+  hideLoading();
 
   // 1) Audio scheduling latency — time from playPing() call to estimated audible moment.
   // audibleMs = scheduling perf.now() + outputLatency_seconds * 1000.
@@ -140,8 +194,23 @@ async function runPerfSelfTest(): Promise<void> {
   document.title = `PERF ${totalAvg < 150 ? 'PASS' : 'FAIL'} ${report}`;
 }
 
+/** Release any state from a previous run so a retry doesn't leak the prior
+ *  HandLandmarker's GL context or stack up orphaned camera tracks. */
+function teardown(): void {
+  running = false;
+  if (video.srcObject) {
+    const s = video.srcObject as MediaStream;
+    for (const t of s.getTracks()) t.stop();
+    video.srcObject = null;
+  }
+  tracker.close();
+  consecutiveFrameErrors = 0;
+}
+
 async function start(): Promise<void> {
   startBtn.disabled = true;
+  teardown();
+  showLoading('카메라 권한 요청 중...');
   setStatus('requesting camera...');
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -153,17 +222,28 @@ async function start(): Promise<void> {
     sizeCanvasTo(video, overlay);
 
     setStatus('loading mediapipe...');
-    await tracker.init();
+    await tracker.init(progressToLoading);
+    showLoading('오디오 준비 중...');
     setStatus('loading audio...');
     await audio.init();
     await audio.resume();
 
-    setStatus('running');
+    hideLoading();
+    setStatus(`running (${tracker.delegate()})`);
+    // Populate the HUD immediately so the user sees the stats / chord panel
+    // before requestVideoFrameCallback fires its first frame (which can lag a
+    // few hundred ms on cold cache, especially under the CPU delegate).
+    statsEl.textContent =
+      `mode: PLAY   delegate: ${tracker.delegate()}   chord-hand: ${chordHandSide}   waiting for first frame...`;
+    chordLabelEl.textContent = '—';
     running = true;
     loop();
   } catch (err) {
+    hideLoading();
     setStatus(`ERROR: ${(err as Error).message}`);
+    teardown();
     startBtn.disabled = false;
+    startBtn.textContent = 'RETRY';
     startBtn.addEventListener('click', start, { once: true });
   }
 }
@@ -187,6 +267,11 @@ function loop(): void {
       requestAnimationFrame((p) => onFrame(p));
     }
   };
+
+  // (A synchronous warm-up processFrame was removed: if MediaPipe's first
+  // detect happens to hang — e.g. broken GPU graph that auto-probe missed —
+  // doing it on the main thread freezes the tab. rVFC fires within ~33ms in
+  // the common case, which is fast enough for the HUD placeholder.)
 
   if (v.requestVideoFrameCallback) {
     v.requestVideoFrameCallback((p, m) => onFrame(p, m as VideoFrameMeta));
@@ -226,9 +311,22 @@ function processFrame(frameCaptureMs: number): void {
       runPlayMode(det, tMs);
     }
     diag.frameCount++;
+    consecutiveFrameErrors = 0;
   } catch (err) {
     diag.lastError = (err as Error).message;
     console.error('processFrame error:', err);
+    consecutiveFrameErrors++;
+    statsEl.textContent = `processFrame ERROR (${tracker.delegate()}): ${(err as Error).message}\n실패 ${consecutiveFrameErrors}회 연속${consecutiveFrameErrors >= MAX_FRAME_ERRORS ? ' — 루프 정지, RETRY 누르세요' : ''}`;
+    if (consecutiveFrameErrors >= MAX_FRAME_ERRORS) {
+      // Loop is wedged. Stop it cleanly and prepare a retry path so the user
+      // isn't stuck staring at a broken-but-still-spinning screen.
+      running = false;
+      teardown();
+      setStatus(`stopped after ${consecutiveFrameErrors} detect errors`);
+      startBtn.disabled = false;
+      startBtn.textContent = 'RETRY';
+      startBtn.addEventListener('click', start, { once: true });
+    }
   }
 }
 
@@ -257,19 +355,31 @@ function runPlayMode(det: FrameDetection, tMs: number): void {
   const strumHand = det.hands.find((h) => h.handedness !== chordHandSide) ?? null;
 
   // Chord classification with smoothing.
-  let raw: ChordName | null = null;
-  if (chordHand) {
-    raw = classifyChord(chordHand.landmarks).chord;
-  }
+  const cls = chordHand ? classifyChord(chordHand.landmarks) : null;
+  const raw: ChordName | null = cls?.chord ?? null;
   const stable = chordStab.update(raw);
   currentChord = stable;
+  if (stable) {
+    lastStableChord = stable;
+    lastStableChordAt = tMs;
+  }
   chordLabelEl.textContent = stable ?? '—';
   diag.lastChord = stable;
 
-  // Strum detection
+  // Render the chord-diagram panel: ideal fingering on the left, what the
+  // hand currently looks like on the right. Updates every frame so the user
+  // can see why a chord isn't classifying.
+  renderExpectedChart(chartExpectedEl, stable);
+  renderDetectedChart(chartDetectedEl, cls?.state ?? null, cls?.tips ?? null);
+
+  // Strum detection. If chord just blinked out for a frame at the strum
+  // moment, fall back to the most recent stable chord within CHORD_STICK_MS.
   const event = strum.update(strumHand ? strumHand.landmarks : null, tMs);
-  if (event && currentChord) {
-    audio.playChord(currentChord, event.dir);
+  const chordForStrum =
+    currentChord ??
+    (lastStableChord && tMs - lastStableChordAt < CHORD_STICK_MS ? lastStableChord : null);
+  if (event && chordForStrum) {
+    audio.playChord(chordForStrum, event.dir);
     lastStrum = event;
     flashStrum();
   } else if (event) {
@@ -279,9 +389,7 @@ function runPlayMode(det: FrameDetection, tMs: number): void {
   }
 
   const lastStrumAge = lastStrum ? `${(tMs - lastStrum.tMs).toFixed(0)}ms ago (${lastStrum.dir})` : 'none';
-  const fingers = chordHand
-    ? formatFingers(classifyChord(chordHand.landmarks).state)
-    : '(no chord hand)';
+  const fingers = cls ? formatFingers(cls.state) : '(no chord hand)';
   const strumPos = strumHand
     ? `wrist y=${strumHand.landmarks[0].y.toFixed(2)}`
     : '(no strum hand)';
@@ -317,6 +425,25 @@ function renderLegend(): void {
   );
   legendEl.innerHTML = items.join('');
 }
+
+// Click stats or status to copy contents to clipboard — makes it easy to share
+// the running state when debugging ("here's what my screen says").
+async function copyOnClick(el: HTMLElement): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(el.textContent ?? '');
+    el.classList.add('copied');
+    setTimeout(() => el.classList.remove('copied'), 400);
+  } catch {
+    // Fallback for older browsers / non-secure contexts.
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  }
+}
+statsEl.addEventListener('click', () => copyOnClick(statsEl));
+statusEl.addEventListener('click', () => copyOnClick(statusEl));
 
 // Toggle chord/strum hand mapping by pressing "S".
 window.addEventListener('keydown', (e) => {

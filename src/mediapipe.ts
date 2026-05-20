@@ -3,6 +3,15 @@ import { FilesetResolver, HandLandmarker, type HandLandmarkerResult } from '@med
 const WASM_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 
+export type InitProgress = {
+  phase: 'wasm' | 'model' | 'graph' | 'probe' | 'fallback' | 'ready';
+  message: string;
+  pct?: number;        // 0..100 when known
+  delegate?: 'GPU' | 'CPU';
+};
+export type ProgressFn = (p: InitProgress) => void;
+
+
 export type Landmark = { x: number; y: number; z: number };
 export type Hand = {
   landmarks: Landmark[];          // 21 normalized landmarks
@@ -18,20 +27,57 @@ export type FrameDetection = {
 };
 
 export class HandTracker {
-  private landmarker!: HandLandmarker;
+  private landmarker?: HandLandmarker;
   private lastTimestamp = 0;
+  private activeDelegate: 'GPU' | 'CPU' = 'CPU';
 
-  async init(): Promise<void> {
+  delegate(): 'GPU' | 'CPU' {
+    return this.activeDelegate;
+  }
+
+  ready(): boolean {
+    return this.landmarker !== undefined;
+  }
+
+  /** Release the underlying HandLandmarker (and its GL context / model
+   *  memory) so a subsequent init() doesn't pile up leaked WebGL contexts.
+   *  Each unclosed HandLandmarker holds an active WebGL context, and Chrome
+   *  caps the per-page total around 16 — past that, the next detect() fails
+   *  with confusing GL errors. Safe to call when already closed. */
+  close(): void {
+    if (this.landmarker) {
+      try {
+        this.landmarker.close();
+      } catch {
+        /* swallow — best-effort cleanup */
+      }
+      this.landmarker = undefined;
+    }
+    this.lastTimestamp = 0;
+  }
+
+  async init(onProgress?: ProgressFn): Promise<void> {
+    // Release any prior landmarker so we don't leak its GL context.
+    this.close();
+
+    const progress: ProgressFn = onProgress ?? ((): void => undefined);
+    progress({ phase: 'wasm', message: 'MediaPipe WASM 로딩...' });
     const vision = await FilesetResolver.forVisionTasks(WASM_BASE);
-    // Use CPU delegate by default. GPU is ~3x faster but some Chrome configs
-    // can't create a WebGL context inside the MediaPipe WASM renderer process
-    // (the user-side `emscripten_webgl_create_context() returned error 0`
-    //  / "Service kGpuService was not provided" failure). The error from the
-    // GPU delegate is logged to console without throwing, so detectForVideo
-    // can't reliably probe it — running on CPU side-steps the issue entirely.
-    // Pass `?gpu=1` in the URL to opt back into the GPU delegate.
-    const wantGpu = new URLSearchParams(location.search).has('gpu');
+
+    // We deliberately do NOT prefetch MODEL_URL with our own fetch even
+    // though that would give us a percentage. Doing so triggers a second
+    // request for the same Google Cloud Storage object — without
+    // Cache-Control headers GCS lets both requests go to network, and the
+    // overlap appears to corrupt MediaPipe's internal model load (observed:
+    // `Cannot read properties of undefined (reading 'activeTexture')` on
+    // the first detect). Let MediaPipe own the fetch; show an
+    // indeterminate "모델 로딩" while it works.
+    progress({ phase: 'model', message: '모델 로딩 (~12MB, 첫 로드만)...' });
+
+    // Default CPU. `?gpu=1` opt-in for users who know GPU works on their setup.
+    const wantGpu = new URLSearchParams(location.search).get('gpu') === '1';
     const delegate: 'GPU' | 'CPU' = wantGpu ? 'GPU' : 'CPU';
+    progress({ phase: 'graph', message: `${delegate} graph 시작...`, delegate });
     this.landmarker = await HandLandmarker.createFromOptions(vision, {
       baseOptions: { modelAssetPath: MODEL_URL, delegate },
       runningMode: 'VIDEO',
@@ -40,9 +86,14 @@ export class HandTracker {
       minHandPresenceConfidence: 0.5,
       minTrackingConfidence: 0.5,
     });
+    this.activeDelegate = delegate;
+    progress({ phase: 'ready', message: `ready (${delegate})`, delegate });
   }
 
   detect(video: HTMLVideoElement | HTMLCanvasElement | OffscreenCanvas | ImageBitmap, nowMs: number): FrameDetection {
+    if (!this.landmarker) {
+      throw new Error('HandTracker.detect called before init / after close');
+    }
     // detectForVideo requires monotonically increasing timestamps.
     let ts = Math.floor(nowMs);
     if (ts <= this.lastTimestamp) ts = this.lastTimestamp + 1;
@@ -56,10 +107,15 @@ export class HandTracker {
     const n = result.landmarks?.length ?? 0;
     for (let i = 0; i < n; i++) {
       const cat = result.handedness[i]?.[0];
-      // MediaPipe reports handedness from the camera's POV; with a mirrored preview
-      // the user's real-world hand is the opposite of what's reported. Flip it.
+      // MediaPipe's handedness convention assumes a mirrored (selfie) input
+      // image — i.e., it reports the *user's* real-world handedness as long
+      // as the input stream is already flipped. On the setups we ship for
+      // (Chrome / desktop webcam, raw stream into MediaPipe, CSS-only mirror
+      // for the preview), MediaPipe's label matches the user's real hand
+      // directly, so we use it as-is. If a particular setup gets it reversed,
+      // pressing `S` swaps which side feeds the chord vs the strum logic.
       const rawLabel = cat?.categoryName ?? 'Right';
-      const handedness: 'Left' | 'Right' = rawLabel === 'Left' ? 'Right' : 'Left';
+      const handedness: 'Left' | 'Right' = rawLabel === 'Left' ? 'Left' : 'Right';
       hands.push({
         landmarks: result.landmarks[i] as Landmark[],
         worldLandmarks: result.worldLandmarks?.[i] as Landmark[] ?? [],

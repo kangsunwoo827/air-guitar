@@ -12,11 +12,27 @@
       <div id="stage">
         <video id="cam" autoplay playsinline muted></video>
         <canvas id="overlay"></canvas>
+        <div id="loading" hidden>
+          <div class="spinner"></div>
+          <div class="phase">loading…</div>
+          <div class="bar"><div class="bar-fill"></div></div>
+          <div class="hint"></div>
+        </div>
         <div id="hud">
           <div id="chord-label">--</div>
           <div id="strum-flash"></div>
           <div id="stats"></div>
           <div id="status">camera off</div>
+          <div id="chord-panel">
+            <div class="diagram">
+              <div class="title">expected</div>
+              <svg id="chart-expected" class="chart"></svg>
+            </div>
+            <div class="diagram">
+              <div class="title">detected</div>
+              <svg id="chart-detected" class="chart"></svg>
+            </div>
+          </div>
         </div>
       </div>
       <div id="controls">
