@@ -215,9 +215,69 @@ function teardown(): void {
   consecutiveFrameErrors = 0;
 }
 
+/** Probe whether we can create a WebGL2 context the same way MediaPipe will.
+ *  If this fails before MediaPipe even loads, the activeTexture crash is an
+ *  environment problem (extension patching getContext, GPU process down,
+ *  context pool exhausted) rather than anything in MediaPipe. */
+function probeWebGL2(): { ok: boolean; reason: string } {
+  try {
+    const c = document.createElement('canvas');
+    c.width = 32;
+    c.height = 32;
+    // MediaPipe asks with these attributes; mirror them so a refusal here
+    // would also be a refusal for MediaPipe.
+    const attrs: WebGLContextAttributes = {
+      alpha: false,
+      antialias: false,
+      depth: true,
+      stencil: false,
+      preserveDrawingBuffer: false,
+      premultipliedAlpha: true,
+      powerPreference: 'default',
+    };
+    const gl = c.getContext('webgl2', attrs) as WebGL2RenderingContext | null;
+    if (!gl) {
+      return { ok: false, reason: "canvas.getContext('webgl2') returned null" };
+    }
+    // Touch a method MediaPipe uses early — if a wallet extension has
+    // monkey-patched the prototype to throw or return undefined we'll see it.
+    if (typeof gl.activeTexture !== 'function') {
+      return { ok: false, reason: 'gl.activeTexture is not a function (patched away?)' };
+    }
+    gl.activeTexture(gl.TEXTURE0);
+    const err = gl.getError();
+    if (err !== gl.NO_ERROR) {
+      return { ok: false, reason: `gl.getError() = 0x${err.toString(16)} after activeTexture probe` };
+    }
+    // Best-effort context loss to free it.
+    const ext = gl.getExtension('WEBGL_lose_context');
+    if (ext) ext.loseContext();
+    return { ok: true, reason: 'WebGL2 OK' };
+  } catch (e) {
+    return { ok: false, reason: `threw: ${(e as Error).message}` };
+  }
+}
+
 async function start(): Promise<void> {
   startBtn.disabled = true;
   teardown();
+
+  // Diagnostic: tell the user up front if WebGL2 is broken in this tab.
+  // The CPU-delegate activeTexture crashes we've been chasing happen
+  // *inside* MediaPipe but the root cause is canvas.getContext('webgl2')
+  // returning null — running our own probe surfaces that immediately
+  // instead of waiting for a confusing detect() error.
+  const probe = probeWebGL2();
+  if (!probe.ok) {
+    showLoading('WebGL2 사용 불가', undefined, `진단: ${probe.reason}\n확장프로그램(MetaMask, SES 등) 비활성화 / 시크릿 모드 시도 권장`);
+    setStatus(`WebGL2 unavailable: ${probe.reason}`);
+    statsEl.textContent = `WebGL2 PROBE FAIL: ${probe.reason}\n→ 다른 Chrome 탭 모두 닫기, 또는 시크릿(extensions OFF)에서 재시도`;
+    startBtn.disabled = false;
+    startBtn.textContent = 'RETRY';
+    startBtn.addEventListener('click', start, { once: true });
+    return;
+  }
+
   showLoading('카메라 권한 요청 중...');
   setStatus('requesting camera...');
   try {
@@ -340,7 +400,17 @@ function processFrame(frameCaptureMs: number): void {
       // isn't stuck staring at a broken-but-still-spinning screen.
       running = false;
       teardown();
+      // Re-run the WebGL2 probe now that we know MediaPipe is unhappy — if
+      // it fails post-init, something inside the page (or an extension)
+      // tore the GL context down mid-flight.
+      const postProbe = probeWebGL2();
+      const msg = (err as Error).message ?? '';
+      const diagnosis = /activeTexture|GLctx|WebGL/.test(msg)
+        ? `\n\n진단: MediaPipe가 WebGL2 컨텍스트를 잃었거나 못 얻음. WebGL2 재검사 결과: ${postProbe.ok ? 'OK (브라우저는 컨텍스트 줄 수 있음 → MediaPipe 자체 버그 의심)' : `FAIL — ${postProbe.reason}`}\n→ 다른 Chrome 탭 모두 닫기 / 시크릿 모드 시도 / 확장프로그램 비활성화`
+        : '';
       setStatus(`stopped after ${consecutiveFrameErrors} detect errors`);
+      statsEl.textContent =
+        `processFrame ERROR (${tracker.delegate()}): ${msg}\n실패 ${consecutiveFrameErrors}회 연속 — 루프 정지${diagnosis}`;
       startBtn.disabled = false;
       startBtn.textContent = 'RETRY';
       startBtn.addEventListener('click', start, { once: true });
